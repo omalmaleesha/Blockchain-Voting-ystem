@@ -2,105 +2,184 @@
 
 pragma solidity >=0.7.0 <0.9.0;
 
-contract SupplyChain {
-    enum State { Created, Supplied, Distributed, Retailed }
-
-    struct Product {
+contract VotingSystem {
+    enum ElectionState { NotStarted, InProgress, Ended }
+    
+    struct Candidate {
         uint id;
         string name;
-        State state;
-        address manufacturer;
-        address supplier;
-        address distributor;
-        address retailer;
+        uint voteCount;
     }
-
-    mapping(uint => Product) public products;
-    uint public productCount;
-
+    
+    struct Voter {
+        bool isRegistered;
+        bool hasVoted;
+        bytes32 voteHash; // Hashed vote for privacy
+    }
+    
+    struct Election {
+        string title;
+        ElectionState state;
+        uint startTime;
+        uint endTime;
+        mapping(address => Voter) voters;
+        Candidate[] candidates;
+        bool isPaused;
+    }
+    
     address public admin;
-
+    mapping(uint => Election) public elections;
+    uint public electionCount;
+    
+    modifier onlyAdmin() {
+        require(msg.sender == admin, "Only admin can perform this action");
+        _;
+    }
+    
+    modifier onlyRegisteredVoter(uint electionId) {
+        require(elections[electionId].voters[msg.sender].isRegistered, "Not a registered voter");
+        _;
+    }
+    
+    modifier electionInProgress(uint electionId) {
+        require(elections[electionId].state == ElectionState.InProgress, "Election not in progress");
+        require(!elections[electionId].isPaused, "Election is paused");
+        require(block.timestamp >= elections[electionId].startTime, "Election not started yet");
+        require(block.timestamp <= elections[electionId].endTime, "Election has ended");
+        _;
+    }
+    
+    event ElectionCreated(uint electionId, string title, uint startTime, uint endTime);
+    event VoterRegistered(uint electionId, address voter);
+    event CandidateAdded(uint electionId, uint candidateId, string name);
+    event VoteCast(uint electionId, address voter);
+    event ElectionStateChanged(uint electionId, ElectionState state);
+    event ElectionPaused(uint electionId, bool isPaused);
+    
     constructor() {
         admin = msg.sender;
     }
-
-    modifier onlyAdmin() {
-        require(msg.sender == admin, "Only admin can assign roles");
-        _;
+    
+    // Admin creates a new election
+    function createElection(string memory title, uint durationInSeconds) public onlyAdmin {
+        Election storage election = elections[electionCount];
+        election.title = title;
+        election.state = ElectionState.NotStarted;
+        election.startTime = block.timestamp;
+        election.endTime = block.timestamp + durationInSeconds;
+        election.isPaused = false;
+        
+        emit ElectionCreated(electionCount, title, election.startTime, election.endTime);
+        electionCount++;
     }
-
-    modifier onlyManufacturer(uint productId) {
-        require(msg.sender == products[productId].manufacturer, "Not the manufacturer");
-        _;
+    
+    // Admin adds a candidate to an election
+    function addCandidate(uint electionId, string memory name) public onlyAdmin {
+        require(electionId < electionCount, "Invalid election ID");
+        require(elections[electionId].state == ElectionState.NotStarted, "Election already started");
+        
+        Election storage election = elections[electionId];
+        uint candidateId = election.candidates.length;
+        election.candidates.push(Candidate(candidateId, name, 0));
+        
+        emit CandidateAdded(electionId, candidateId, name);
     }
-
-    modifier onlySupplier(uint productId) {
-        require(msg.sender == products[productId].supplier, "Not the supplier");
-        _;
+    
+    // Admin registers a voter
+    function registerVoter(uint electionId, address voter) public onlyAdmin {
+        require(electionId < electionCount, "Invalid election ID");
+        require(!elections[electionId].voters[voter].isRegistered, "Voter already registered");
+        
+        elections[electionId].voters[voter] = Voter(true, false, bytes32(0));
+        emit VoterRegistered(electionId, voter);
     }
-
-    modifier onlyDistributor(uint productId) {
-        require(msg.sender == products[productId].distributor, "Not the distributor");
-        _;
+    
+    // Admin starts the election
+    function startElection(uint electionId) public onlyAdmin {
+        require(electionId < electionCount, "Invalid election ID");
+        require(elections[electionId].state == ElectionState.NotStarted, "Election already started");
+        
+        elections[electionId].state = ElectionState.InProgress;
+        emit ElectionStateChanged(electionId, ElectionState.InProgress);
     }
-
-    modifier onlyRetailer(uint productId) {
-        require(msg.sender == products[productId].retailer, "Not the retailer");
-        _;
+    
+    // Admin ends the election
+    function endElection(uint electionId) public onlyAdmin {
+        require(electionId < electionCount, "Invalid election ID");
+        require(elections[electionId].state == ElectionState.InProgress, "Election not in progress");
+        
+        elections[electionId].state = ElectionState.Ended;
+        emit ElectionStateChanged(electionId, ElectionState.Ended);
     }
-
-    // Admin creates the product and sets roles
-    function createProduct(
-        string memory name,
-        address supplier,
-        address distributor,
-        address retailer
-    ) public {
-        products[productCount] = Product(
-            productCount,
-            name,
-            State.Created,
-            msg.sender,
-            supplier,
-            distributor,
-            retailer
-        );
-        productCount++;
+    
+    // Admin pauses or unpauses the election
+    function togglePauseElection(uint electionId) public onlyAdmin {
+        require(electionId < electionCount, "Invalid election ID");
+        require(elections[electionId].state == ElectionState.InProgress, "Election not in progress");
+        
+        elections[electionId].isPaused = !elections[electionId].isPaused;
+        emit ElectionPaused(electionId, elections[electionId].isPaused);
     }
-
-    function supplyProduct(uint productId) public onlySupplier(productId) {
-        require(products[productId].state == State.Created, "Product not ready for supply");
-        products[productId].state = State.Supplied;
+    
+    // Voter casts a vote
+    function castVote(uint electionId, uint candidateId, bytes32 voteHash) public onlyRegisteredVoter(electionId) electionInProgress(electionId) {
+        Election storage election = elections[electionId];
+        require(!election.voters[msg.sender].hasVoted, "Voter has already voted");
+        require(candidateId < election.candidates.length, "Invalid candidate ID");
+        
+        election.voters[msg.sender].hasVoted = true;
+        election.voters[msg.sender].voteHash = voteHash;
+        election.candidates[candidateId].voteCount++;
+        
+        emit VoteCast(electionId, msg.sender);
     }
-
-    function distributeProduct(uint productId) public onlyDistributor(productId) {
-        require(products[productId].state == State.Supplied, "Product not ready for distribution");
-        products[productId].state = State.Distributed;
+    
+    // Voter verifies their vote
+    function verifyVote(uint electionId, bytes32 voteHash) public view returns (bool) {
+        require(electionId < electionCount, "Invalid election ID");
+        return elections[electionId].voters[msg.sender].voteHash == voteHash;
     }
-
-    function retailProduct(uint productId) public onlyRetailer(productId) {
-        require(products[productId].state == State.Distributed, "Product not ready for retail");
-        products[productId].state = State.Retailed;
-    }
-
-    function getProduct(uint productId) public view returns (
-        uint,
-        string memory,
-        State,
-        address,
-        address,
-        address,
-        address
+    
+    // Get election details
+    function getElection(uint electionId) public view returns (
+        string memory title,
+        ElectionState state,
+        uint startTime,
+        uint endTime,
+        bool isPaused,
+        uint candidateCount
     ) {
-        Product memory p = products[productId];
+        require(electionId < electionCount, "Invalid election ID");
+        Election storage election = elections[electionId];
         return (
-            p.id,
-            p.name,
-            p.state,
-            p.manufacturer,
-            p.supplier,
-            p.distributor,
-            p.retailer
+            election.title,
+            election.state,
+            election.startTime,
+            election.endTime,
+            election.isPaused,
+            election.candidates.length
         );
+    }
+    
+    // Get candidate details
+    function getCandidate(uint electionId, uint candidateId) public view returns (
+        uint id,
+        string memory name,
+        uint voteCount
+    ) {
+        require(electionId < electionCount, "Invalid election ID");
+        require(candidateId < elections[electionId].candidates.length, "Invalid candidate ID");
+        Candidate memory candidate = elections[electionId].candidates[candidateId];
+        return (candidate.id, candidate.name, candidate.voteCount);
+    }
+    
+    // Get voter status
+    function getVoterStatus(uint electionId, address voter) public view returns (
+        bool isRegistered,
+        bool hasVoted
+    ) {
+        require(electionId < electionCount, "Invalid election ID");
+        Voter memory voterInfo = elections[electionId].voters[voter];
+        return (voterInfo.isRegistered, voterInfo.hasVoted);
     }
 }

@@ -15,6 +15,7 @@ contract VotingSystem {
         bool hasCommitted; // Indicates if the voter has committed their vote
         bool hasRevealed;  // Indicates if the voter has revealed their vote
         bytes32 commitment; // Hashed commitment for privacy
+
     }
     
     struct Election {
@@ -23,6 +24,7 @@ contract VotingSystem {
         uint startTime;
         uint endTime;
         uint revelationPeriod; // Duration for vote revelation after election ends
+
         mapping(address => Voter) voters;
         Candidate[] candidates;
         bool isPaused;
@@ -55,6 +57,7 @@ contract VotingSystem {
     event CandidateAdded(uint electionId, uint candidateId, string name);
     event VoteCommitted(uint electionId, address voter);
     event VoteRevealed(uint electionId, address voter, uint candidateId);
+
     event ElectionStateChanged(uint electionId, ElectionState state);
     event ElectionPaused(uint electionId, bool isPaused);
     
@@ -62,8 +65,10 @@ contract VotingSystem {
         admin = msg.sender;
     }
     
+
     // Admin creates a new election with a revelation period
     function createElection(string memory title, uint durationInSeconds, uint revelationPeriodInSeconds) public onlyAdmin {
+
         Election storage election = elections[electionCount];
         election.title = title;
         election.state = ElectionState.NotStarted;
@@ -73,6 +78,7 @@ contract VotingSystem {
         election.isPaused = false;
         
         emit ElectionCreated(electionCount, title, election.startTime, election.endTime, revelationPeriodInSeconds);
+
         electionCount++;
     }
     
@@ -92,8 +98,9 @@ contract VotingSystem {
     function registerVoter(uint electionId, address voter) public onlyAdmin {
         require(electionId < electionCount, "Invalid election ID");
         require(!elections[electionId].voters[voter].isRegistered, "Voter already registered");
-        
+
         elections[electionId].voters[voter] = Voter(true, false, false, bytes32(0));
+
         emit VoterRegistered(electionId, voter);
     }
     
@@ -106,6 +113,7 @@ contract VotingSystem {
         emit ElectionStateChanged(electionId, ElectionState.InProgress);
     }
     
+
     // Admin ends the election after the revelation phase
     function endElection(uint electionId) public onlyAdmin {
         require(electionId < electionCount, "Invalid election ID");
@@ -168,6 +176,7 @@ contract VotingSystem {
     function verifyCommitment(uint electionId, bytes32 commitment) public view returns (bool) {
         require(electionId < electionCount, "Invalid election ID");
         return elections[electionId].voters[msg.sender].commitment == commitment;
+
     }
     
     // Get election details
@@ -177,6 +186,7 @@ contract VotingSystem {
         uint startTime,
         uint endTime,
         uint revelationPeriod,
+
         bool isPaused,
         uint candidateCount
     ) {
@@ -187,7 +197,9 @@ contract VotingSystem {
             election.state,
             election.startTime,
             election.endTime,
+
             election.revelationPeriod,
+
             election.isPaused,
             election.candidates.length
         );
@@ -214,5 +226,6 @@ contract VotingSystem {
         require(electionId < electionCount, "Invalid election ID");
         Voter memory voterInfo = elections[electionId].voters[voter];
         return (voterInfo.isRegistered, voterInfo.hasCommitted, voterInfo.hasRevealed);
+
     }
 }

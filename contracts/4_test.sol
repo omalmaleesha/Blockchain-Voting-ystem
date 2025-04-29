@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-3.0
-
 pragma solidity >=0.7.0 <0.9.0;
 
 contract VotingSystem {
@@ -13,8 +12,10 @@ contract VotingSystem {
     
     struct Voter {
         bool isRegistered;
-        bool hasVoted;
-        bytes32 voteHash; // Hashed vote for privacy
+        bool hasCommitted; // Indicates if the voter has committed their vote
+        bool hasRevealed;  // Indicates if the voter has revealed their vote
+        bytes32 commitment; // Hashed commitment for privacy
+
     }
     
     struct Election {
@@ -22,6 +23,8 @@ contract VotingSystem {
         ElectionState state;
         uint startTime;
         uint endTime;
+        uint revelationPeriod; // Duration for vote revelation after election ends
+
         mapping(address => Voter) voters;
         Candidate[] candidates;
         bool isPaused;
@@ -49,10 +52,12 @@ contract VotingSystem {
         _;
     }
     
-    event ElectionCreated(uint electionId, string title, uint startTime, uint endTime);
+    event ElectionCreated(uint electionId, string title, uint startTime, uint endTime, uint revelationPeriod);
     event VoterRegistered(uint electionId, address voter);
     event CandidateAdded(uint electionId, uint candidateId, string name);
-    event VoteCast(uint electionId, address voter);
+    event VoteCommitted(uint electionId, address voter);
+    event VoteRevealed(uint electionId, address voter, uint candidateId);
+
     event ElectionStateChanged(uint electionId, ElectionState state);
     event ElectionPaused(uint electionId, bool isPaused);
     
@@ -60,16 +65,20 @@ contract VotingSystem {
         admin = msg.sender;
     }
     
-    // Admin creates a new election
-    function createElection(string memory title, uint durationInSeconds) public onlyAdmin {
+
+    // Admin creates a new election with a revelation period
+    function createElection(string memory title, uint durationInSeconds, uint revelationPeriodInSeconds) public onlyAdmin {
+
         Election storage election = elections[electionCount];
         election.title = title;
         election.state = ElectionState.NotStarted;
         election.startTime = block.timestamp;
         election.endTime = block.timestamp + durationInSeconds;
+        election.revelationPeriod = revelationPeriodInSeconds;
         election.isPaused = false;
         
-        emit ElectionCreated(electionCount, title, election.startTime, election.endTime);
+        emit ElectionCreated(electionCount, title, election.startTime, election.endTime, revelationPeriodInSeconds);
+
         electionCount++;
     }
     
@@ -89,8 +98,9 @@ contract VotingSystem {
     function registerVoter(uint electionId, address voter) public onlyAdmin {
         require(electionId < electionCount, "Invalid election ID");
         require(!elections[electionId].voters[voter].isRegistered, "Voter already registered");
-        
-        elections[electionId].voters[voter] = Voter(true, false, bytes32(0));
+
+        elections[electionId].voters[voter] = Voter(true, false, false, bytes32(0));
+
         emit VoterRegistered(electionId, voter);
     }
     
@@ -103,41 +113,70 @@ contract VotingSystem {
         emit ElectionStateChanged(electionId, ElectionState.InProgress);
     }
     
-    // Admin ends the election
+
+    // Admin ends the election after the revelation phase
     function endElection(uint electionId) public onlyAdmin {
         require(electionId < electionCount, "Invalid election ID");
-        require(elections[electionId].state == ElectionState.InProgress, "Election not in progress");
+        Election storage election = elections[electionId];
+        require(election.state == ElectionState.InProgress, "Election not in progress");
+        require(block.timestamp > election.endTime + election.revelationPeriod, "Revelation phase not ended");
         
-        elections[electionId].state = ElectionState.Ended;
+        election.state = ElectionState.Ended;
         emit ElectionStateChanged(electionId, ElectionState.Ended);
     }
     
-    // Admin pauses or unpauses the election
+    // Admin pauses or unpauses the election (only during commitment phase)
     function togglePauseElection(uint electionId) public onlyAdmin {
         require(electionId < electionCount, "Invalid election ID");
-        require(elections[electionId].state == ElectionState.InProgress, "Election not in progress");
-        
-        elections[electionId].isPaused = !elections[electionId].isPaused;
-        emit ElectionPaused(electionId, elections[electionId].isPaused);
-    }
-    
-    // Voter casts a vote
-    function castVote(uint electionId, uint candidateId, bytes32 voteHash) public onlyRegisteredVoter(electionId) electionInProgress(electionId) {
         Election storage election = elections[electionId];
-        require(!election.voters[msg.sender].hasVoted, "Voter has already voted");
-        require(candidateId < election.candidates.length, "Invalid candidate ID");
+        require(election.state == ElectionState.InProgress, "Election not in progress");
+        require(block.timestamp <= election.endTime, "Cannot pause during revelation phase");
         
-        election.voters[msg.sender].hasVoted = true;
-        election.voters[msg.sender].voteHash = voteHash;
-        election.candidates[candidateId].voteCount++;
-        
-        emit VoteCast(electionId, msg.sender);
+        election.isPaused = !election.isPaused;
+        emit ElectionPaused(electionId, election.isPaused);
     }
     
-    // Voter verifies their vote
-    function verifyVote(uint electionId, bytes32 voteHash) public view returns (bool) {
+    // Voter commits their vote during the election
+    function castVote(uint electionId, bytes32 commitment) public onlyRegisteredVoter(electionId) electionInProgress(electionId) {
+        Election storage election = elections[electionId];
+        Voter storage voter = election.voters[msg.sender];
+        require(!voter.hasCommitted, "Voter has already committed a vote");
+        
+        voter.hasCommitted = true;
+        voter.commitment = commitment;
+        
+        emit VoteCommitted(electionId, msg.sender);
+    }
+    
+    // Voter reveals their vote after the election ends
+    function revealVote(uint electionId, uint candidateId, bytes32 nonce) public {
         require(electionId < electionCount, "Invalid election ID");
-        return elections[electionId].voters[msg.sender].voteHash == voteHash;
+        Election storage election = elections[electionId];
+        require(election.state == ElectionState.InProgress, "Election not in progress");
+        require(block.timestamp > election.endTime, "Revelation phase not started");
+        require(block.timestamp <= election.endTime + election.revelationPeriod, "Revelation phase ended");
+        
+        Voter storage voter = election.voters[msg.sender];
+        require(voter.isRegistered, "Not a registered voter");
+        require(voter.hasCommitted, "Voter has not committed a vote");
+        require(!voter.hasRevealed, "Voter has already revealed their vote");
+        
+        bytes32 computedCommitment = keccak256(abi.encode(candidateId, nonce));
+        require(computedCommitment == voter.commitment, "Invalid revelation");
+        
+        // Increment the vote count for the candidate
+        require(candidateId < election.candidates.length, "Invalid candidate ID");
+        election.candidates[candidateId].voteCount++;
+        voter.hasRevealed = true;
+        
+        emit VoteRevealed(electionId, msg.sender, candidateId);
+    }
+    
+    // Voter verifies their commitment
+    function verifyCommitment(uint electionId, bytes32 commitment) public view returns (bool) {
+        require(electionId < electionCount, "Invalid election ID");
+        return elections[electionId].voters[msg.sender].commitment == commitment;
+
     }
     
     // Get election details
@@ -146,6 +185,8 @@ contract VotingSystem {
         ElectionState state,
         uint startTime,
         uint endTime,
+        uint revelationPeriod,
+
         bool isPaused,
         uint candidateCount
     ) {
@@ -156,6 +197,9 @@ contract VotingSystem {
             election.state,
             election.startTime,
             election.endTime,
+
+            election.revelationPeriod,
+
             election.isPaused,
             election.candidates.length
         );
@@ -176,10 +220,12 @@ contract VotingSystem {
     // Get voter status
     function getVoterStatus(uint electionId, address voter) public view returns (
         bool isRegistered,
-        bool hasVoted
+        bool hasCommitted,
+        bool hasRevealed
     ) {
         require(electionId < electionCount, "Invalid election ID");
         Voter memory voterInfo = elections[electionId].voters[voter];
-        return (voterInfo.isRegistered, voterInfo.hasVoted);
+        return (voterInfo.isRegistered, voterInfo.hasCommitted, voterInfo.hasRevealed);
+
     }
 }
